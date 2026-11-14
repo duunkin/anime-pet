@@ -7,6 +7,8 @@ src/main.py
 - Khởi tạo Cubism SDK (live2d.init()).
 - Nạp nhân vật từ characters/<tên>/character.json.
 - Phối hợp các hệ thống: Physics, StateMachine, Live2DView và Overlay.
+- TÁI CẤU TRÚC HIỆU NĂNG: Cửa sổ Overlay chỉ có kích thước vừa khít nhân vật + lề 40px
+  (thay vì phủ toàn màn hình gây lag), tự di chuyển theo tọa độ PetPhysics mỗi frame.
 - Dọn dẹp tài nguyên và giải phóng Live2D khi kết thúc.
 """
 
@@ -21,7 +23,6 @@ if project_root not in sys.path:
 import argparse
 import ctypes
 
-from PySide6.QtCore import Qt
 from PySide6.QtGui import QSurfaceFormat
 from PySide6.QtWidgets import QApplication
 
@@ -75,7 +76,7 @@ def configure_surface_format() -> None:
 def main() -> None:
     """Hàm khởi tạo và chạy ứng dụng chính."""
     # 1. Xử lý tham số dòng lệnh
-    parser = argparse.ArgumentParser(description="Anime Desktop Pet - Giai đoạn 1")
+    parser = argparse.ArgumentParser(description="Anime Desktop Pet - Tối ưu hóa hiệu năng cửa sổ nhỏ")
     parser.add_argument("--character", "-c", type=str, default="Hiyori",
                         help="Tên thư mục nhân vật trong characters/ (mặc định: Hiyori)")
     parser.add_argument("--auto-exit", type=int, default=0,
@@ -83,13 +84,14 @@ def main() -> None:
     args = parser.parse_args()
 
     print("=================================================================")
-    print(" ANIME DESKTOP PET - GIAI ĐOẠN 1")
+    print(" ANIME DESKTOP PET - TÁI CẤU TRÚC OVERLAY CỬA SỔ NHỎ (TỐI ƯU FPS)")
     print(f" Nhân vật: {args.character}")
     print(" Thao tác:")
-    print(" - Chuột: Di chuyển lại gần để mắt nhìn theo")
+    print(" - Chuột: Di chuyển lại gần để mắt nhìn theo (kể cả khi chuột ở ngoài cửa sổ)")
     print(" - Click trái: Giật mình")
     print(" - Giữ chuột trái & kéo: Nhấc nhân vật lên; thả ra: rơi tự do")
     print(" - Click phải: Menu (Ngủ, Nhảy, Thoát)")
+    print(" - Vùng trống (lề 40px): Click xuyên thấu xuống app bên dưới")
     print(" - Phím tắt: [Ctrl+Q] hoặc [Esc] để thoát")
     print("=================================================================")
 
@@ -119,15 +121,16 @@ def main() -> None:
     if character_profile.scale:
         settings.default_scale = character_profile.scale
 
-    # 7. Lấy kích thước màn hình chính
+    # 7. Lấy kích thước màn hình chính (Logical Pixels)
     screen = app.primaryScreen()
     screen_geo = screen.geometry()
     screen_w = screen_geo.width()
     screen_h = screen_geo.height()
     dpr = screen.devicePixelRatio()
-    print(f"[Màn hình] Kích thước: {screen_w}x{screen_h} (Logical), DPI Scale: {dpr * 100:.0f}%")
+    print(f"[Màn hình] Kích thước: {screen_w}x{screen_h} (Logical Pixels), DPI Scale: {dpr * 100:.0f}%")
 
     # 8. Khởi tạo các module con (mỗi module một trách nhiệm)
+    # PetPhysics hoàn toàn làm việc với hệ tọa độ màn hình (Logical Pixels)
     physics = PetPhysics(
         screen_width=screen_w,
         screen_height=screen_h,
@@ -141,14 +144,25 @@ def main() -> None:
 
     live2d_view = Live2DView(character=character_profile)
 
-    # 9. Tạo và khởi chạy cửa sổ Overlay chính
+    # 9. Tạo và khởi chạy cửa sổ Overlay nhỏ (không phủ màn hình)
     overlay = Live2DPetOverlay(
         settings=settings,
         physics=physics,
         state_machine=state_machine,
         live2d_view=live2d_view
     )
-    overlay.setGeometry(screen_geo)
+
+    # Tính toán vị trí hình học ban đầu trước khi show (đặt tại vị trí ban đầu của pet)
+    center_x, center_y, bottom_y = physics.get_screen_center_and_bottom()
+    init_char_h = settings.character_height_px
+    init_char_w = physics.state.width
+    margin = settings.window_margin_px
+    init_win_w = int(round(init_char_w + 2.0 * margin))
+    init_win_h = int(round(init_char_h + 2.0 * margin))
+    init_win_x = int(round(center_x - init_win_w / 2.0))
+    init_win_y = int(round(bottom_y - (init_win_h - margin)))
+
+    overlay.setGeometry(init_win_x, init_win_y, init_win_w, init_win_h)
     overlay.show()
 
     # 10. Chạy vòng lặp sự kiện Qt

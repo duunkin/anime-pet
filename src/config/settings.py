@@ -5,7 +5,7 @@ Quản lý cấu hình toàn bộ ứng dụng Anime Desktop Pet.
 Sử dụng dataclass để đảm bảo tính tường minh, có type hinting và không dùng biến toàn cục lộn xộn.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import os
 
 
@@ -23,7 +23,12 @@ class AppSettings:
     idle_fps: int = 15            # FPS thấp khi ở trạng thái nghỉ / ngủ lâu để tiết kiệm điện và CPU/GPU
     fps_idle_timeout_sec: float = 6.0  # Thời gian không thao tác (giây) để hạ về FPS thấp
 
-    # Thông số vật lý (tính theo pixel màn hình)
+    # Cấu hình kích thước cửa sổ nhỏ (không phủ màn hình)
+    # Cửa sổ chỉ vừa khít nhân vật + lề mỗi phía (mặc định 40px theo yêu cầu)
+    window_margin_px: int = 40    # Lề 40px mỗi phía (trái, phải, trên, dưới) tính theo Logical Pixels
+    character_height_px: float = 480.0  # Chiều cao logic mặc định của nhân vật trên màn hình
+
+    # Thông số vật lý (tính theo pixel màn hình Logical)
     gravity: float = 2400.0       # Gia tốc trọng lực (pixels / s^2)
     drag_threshold_px: float = 10.0  # Khoảng cách tối thiểu để phân biệt click thường và kéo thả
     floor_margin_px: float = 10.0 # Khoảng cách an toàn so với đáy màn hình / taskbar

@@ -4,9 +4,9 @@ src/render/live2d_view.py
 Quản lý tầng vẽ và tương tác trực tiếp với Live2D Cubism SDK (live2d-py):
 - Khởi tạo OpenGL context cho Live2D (glInit).
 - Nạp model và shader render.
-- Đồng bộ vị trí từ hệ tọa độ pixel màn hình sang hệ tọa độ NDC của Live2D.
-- Hitbox calculation cho cơ chế click xuyên thấu.
-- Điều khiển cử động mắt và mặt nhìn theo con trỏ chuột khi con trỏ ở gần.
+- Thiết lập bố cục trong cửa sổ nhỏ: Canh chỉnh model khớp chính xác với lề (margin 40px mỗi phía).
+- Tính toán Hitbox theo không gian Physical Pixels cục bộ của cửa sổ nhỏ.
+- Điều khiển cử động mắt và mặt nhìn theo con trỏ chuột (kể cả khi con trỏ ở xa ngoài cửa sổ).
 """
 
 from typing import Optional, Tuple
@@ -19,7 +19,7 @@ from src.core.character import CharacterProfile
 
 class Live2DView:
     """
-    Lớp điều khiển hiển thị và hoạt hình Live2D Model.
+    Lớp điều khiển hiển thị và hoạt hình Live2D Model bên trong cửa sổ overlay nhỏ.
     """
 
     def __init__(self, character: CharacterProfile):
@@ -36,7 +36,7 @@ class Live2DView:
     def initialize_gl(self) -> bool:
         """
         Khởi tạo môi trường OpenGL của Live2D và nạp model.
-        BẮT BUỘC được gọi bên trong context OpenGL hợp lệ (ví dụ initializeGL của QOpenGLWidget).
+        BẮT BUỘC được gọi bên trong context OpenGL hợp lệ (initializeGL của QOpenGLWidget).
         """
         print("[Live2D View] Khởi tạo OpenGL Shaders của Live2D SDK...")
         live2d.glInit()
@@ -69,7 +69,8 @@ class Live2DView:
 
     def _compute_model_bounds(self) -> None:
         """
-        Quét các đỉnh drawable để tính Bounding Box bao quanh toàn bộ nhân vật.
+        Quét các đỉnh drawable để tính Bounding Box bao quanh toàn bộ nhân vật
+        trong không gian tọa độ Model Space.
         """
         if self.model is None:
             return
@@ -89,16 +90,97 @@ class Live2DView:
                     if vy < min_y: min_y = vy
                     if vy > max_y: max_y = vy
 
-            # Thêm đệm an toàn 5%
+            # Thêm đệm an toàn 5% cho tóc/quần áo khi cử động
             pad_x = (max_x - min_x) * 0.05
             pad_y = (max_y - min_y) * 0.05
             self.model_bounds = (min_x - pad_x, min_y - pad_y, max_x + pad_x, max_y + pad_y)
         except Exception as exc:
             print(f"[Live2D View] Cảnh báo khi tính bounding box: {exc}")
-            self.model_bounds = (-1.0, -1.0, 1.0, 1.0)
+            self.model_bounds = (-0.5, -1.0, 0.5, 1.0)
+
+    def get_model_aspect_ratio(self) -> float:
+        """
+        Trả về tỉ lệ bề ngang / bề cao (width / height) của nhân vật từ model_bounds.
+        """
+        if self.model_bounds is None:
+            return 0.45
+        mb_w = self.model_bounds[2] - self.model_bounds[0]
+        mb_h = self.model_bounds[3] - self.model_bounds[1]
+        if mb_h <= 0.001:
+            return 0.45
+        return mb_w / mb_h
+
+    def setup_layout(self, logical_w: int, logical_h: int, dpr: float, margin_px: float = 40.0) -> None:
+        """
+        Cấu hình kích thước viewport và căn chỉnh vị trí model trong cửa sổ nhỏ:
+        
+        Quy đổi DPI:
+        - logical_w, logical_h: Kích thước cửa sổ Qt (Logical Pixels).
+        - dpr: Tỉ lệ Device Pixel Ratio (ví dụ 1.25 trên màn hình 125% DPI).
+        - phys_w = logical_w * dpr, phys_h = logical_h * dpr: Kích thước OpenGL Framebuffer (Physical Pixels).
+        - margin_phys = margin_px * dpr: Lề 40px quy đổi sang Physical Pixels.
+        
+        Nhân vật sẽ được đặt chính xác:
+        - Cách mép trên đúng margin_phys.
+        - Cách mép dưới đúng margin_phys.
+        - Cách mép trái đúng margin_phys.
+        - Cách mép phải đúng margin_phys.
+        """
+        if self.model is None or logical_w <= 0 or logical_h <= 0:
+            return
+
+        # 1. Kích thước vật lý của Viewport OpenGL (Physical Pixels)
+        phys_w = int(round(logical_w * dpr))
+        phys_h = int(round(logical_h * dpr))
+        margin_phys = margin_px * dpr
+
+        GL.glViewport(0, 0, phys_w, phys_h)
+        self.model.Resize(phys_w, phys_h)
+
+        if self.model_bounds is None:
+            self._compute_model_bounds()
+
+        mb = self.model_bounds
+        if mb is None:
+            return
+
+        mb_w = mb[2] - mb[0]
+        mb_h = mb[3] - mb[1]
+        mb_left = mb[0]
+        mb_bottom = mb[1]
+
+        # 2. Chiều cao mong muốn của nhân vật trong viewport vật lý
+        char_phys_h = max(10.0, phys_h - 2.0 * margin_phys)
+
+        # 3. Tính scale để nhân vật khớp đúng chiều cao char_phys_h
+        # Trong Cubism SDK: MVP[5] = (2.0 / canvas_h) * scale
+        # Chiều cao pixel = mb_h * MVP[5] / 2.0 * phys_h = (mb_h / canvas_h) * scale * phys_h
+        # Do đó: scale = (char_phys_h / phys_h) * (canvas_h / mb_h)
+        canvas_w, canvas_h = self.model.GetCanvasSize()
+        scale = (char_phys_h / phys_h) * (canvas_h / mb_h)
+        self.model.SetScale(scale)
+        self.model.Update()
+
+        # 4. Tính offset để nhân vật cách đúng lề 40px ở 4 phía
+        # Cubism SDK tự nhân offset_x với aspect ratio (phys_h / phys_w)
+        mvp = self.model.GetMvp()
+        aspect = float(phys_h) / float(phys_w)
+
+        # Trục X: Căn mép trái cách lề trái đúng margin_phys
+        target_ndc_x = 2.0 * (margin_phys / phys_w) - 1.0
+        off_x = (target_ndc_x - mb_left * mvp[0]) / aspect
+
+        # Trục Y: Căn mép dưới cách lề dưới đúng margin_phys
+        target_ndc_y = 2.0 * (margin_phys / phys_h) - 1.0
+        off_y = target_ndc_y - mb_bottom * mvp[5]
+
+        self.model.SetOffset(off_x, off_y)
+        self.model.Update()
 
     def resize(self, width: int, height: int) -> None:
-        """Đồng bộ viewport khi cửa sổ thay đổi kích thước."""
+        """
+        Đồng bộ viewport khi cửa sổ thay đổi kích thước (Fallback tương thích).
+        """
         GL.glViewport(0, 0, width, height)
         if self.model is not None:
             self.model.Resize(width, height)
@@ -106,28 +188,15 @@ class Live2DView:
 
     def set_screen_position(self, center_x: float, bottom_y: float, screen_w: int, screen_h: int) -> None:
         """
-        Quy đổi tọa độ màn hình pixel (từ module Physics) sang tọa độ NDC của Live2D:
-        - NDC X: [-1.0 (trái), 1.0 (phải)]
-        - NDC Y: [-1.0 (đáy), 1.0 (đỉnh)]
+        Hàm tương thích cũ: Khi cửa sổ overlay đã tự di chuyển theo tọa độ màn hình
+        (self.move()), vị trí nhân vật bên trong cửa sổ là cố định theo setup_layout.
         """
-        if self.model is None or screen_w <= 0 or screen_h <= 0:
-            return
-
-        # Tính toán ước lượng vị trí tâm của nhân vật
-        approx_height_px = screen_h * self.character.scale
-        center_y = bottom_y - (approx_height_px * 0.5)
-
-        # Chuyển đổi sang NDC
-        ndc_x = (center_x / screen_w) * 2.0 - 1.0
-        # Lưu ý: Trục Y của màn hình Windows hướng xuống, còn Live2D NDC hướng lên
-        ndc_y = 1.0 - (center_y / screen_h) * 2.0
-
-        self.model.SetOffset(ndc_x, ndc_y)
+        pass
 
     def get_screen_bounds_physical(self, phys_w: float, phys_h: float) -> Optional[Tuple[float, float, float, float]]:
         """
-        Tính toán tọa độ khung bao nhân vật trên màn hình vật lý (Physical Pixels)
-        để phục vụ kiểm tra hit-test click-through.
+        Tính toán tọa độ khung bao nhân vật trong KHÔNG GIAN CỤC BỘ CỦA CỬA SỔ (Local Physical Pixels).
+        Trả về (left, top, right, bottom) phục vụ kiểm tra hit-test và eye-tracking.
         """
         if self.model is None or self.model_bounds is None:
             return None
@@ -151,13 +220,16 @@ class Live2DView:
         except Exception:
             return None
 
-    def update_look_at(self, cursor_phys_x: float, cursor_phys_y: float,
+    def update_look_at(self, cursor_local_phys_x: float, cursor_local_phys_y: float,
                        box: Optional[Tuple[float, float, float, float]],
                        max_distance_px: float) -> None:
         """
         Điều khiển hướng nhìn của mắt và quay đầu theo con trỏ chuột:
-        - Khi con trỏ ở trong phạm vi max_distance_px: mắt và mặt nhìn theo.
-        - Khi con trỏ ở xa: từ từ đưa mắt nhìn thẳng tự nhiên.
+        - cursor_local_phys_x, cursor_local_phys_y: Tọa độ con trỏ chuột trong không gian
+          cục bộ của cửa sổ (Local Physical Pixels). Khi con trỏ ở ngoài cửa sổ, tọa độ này
+          vẫn phản ánh chính xác vị trí tương đối (có thể âm hoặc lớn hơn kích thước cửa sổ).
+        - box: Bounding box nhân vật trong cửa sổ (Local Physical Pixels).
+        - max_distance_px: Khoảng cách tối đa để pet chú ý nhìn theo (Physical Pixels).
         """
         if self.model is None:
             return
@@ -166,18 +238,19 @@ class Live2DView:
             target_x, target_y = 0.0, 0.0
         else:
             x1, y1, x2, y2 = box
-            # Ước lượng vị trí vùng mắt / đầu (khoảng 30% từ đỉnh đầu xuống)
+            # Ước lượng vị trí mắt/đầu nhân vật (~30% từ đỉnh đầu xuống)
             eye_x = (x1 + x2) * 0.5
             eye_y = y1 + (y2 - y1) * 0.3
 
-            dx = cursor_phys_x - eye_x
-            dy = cursor_phys_y - eye_y
+            # Khoảng cách vector từ mắt tới chuột trên màn hình
+            dx = cursor_local_phys_x - eye_x
+            dy = cursor_local_phys_y - eye_y
             dist = (dx * dx + dy * dy) ** 0.5
 
             if dist <= max_distance_px and max_distance_px > 0:
                 # Chuẩn hóa về đoạn [-1.0, 1.0]
                 target_x = max(-1.0, min(1.0, dx / (max_distance_px * 0.5)))
-                # Con trỏ ở dưới -> mắt nhìn xuống (Y âm)
+                # Con trỏ ở dưới -> mắt nhìn xuống (Y âm trong Cubism Drag)
                 target_y = max(-1.0, min(1.0, -dy / (max_distance_px * 0.5)))
             else:
                 # Con trỏ ở xa -> nhìn chính diện
@@ -194,7 +267,7 @@ class Live2DView:
         except Exception:
             pass
 
-        # 2. Bổ sung gán trực tiếp các tham số góc quay đầu và nhãn cầu mắt
+        # 2. Gán trực tiếp các tham số góc quay đầu và nhãn cầu mắt
         try:
             self.model.SetParamById("ParamAngleX", self._current_look_x * 20.0)
             self.model.SetParamById("ParamAngleY", self._current_look_y * 20.0)

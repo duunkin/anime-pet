@@ -2,9 +2,12 @@
 src/core/physics.py
 -------------------
 Quản lý mô phỏng vật lý của nhân vật trên màn hình:
-- Tọa độ là PIXEL MÀN HÌNH thực tế (hoàn toàn tách biệt khỏi code vẽ OpenGL/Live2D).
+- Tọa độ là PIXEL LOGIC MÀN HÌNH (Logical Pixels / DIPs) thực tế (hoàn toàn tách biệt khỏi code vẽ OpenGL/Live2D).
+- Đồng bộ với DPI Awareness v2: Mọi tính toán vị trí x, y, chiều rộng, chiều cao, sàn đáy màn hình
+  đều là Logical Pixels, giúp cửa sổ Qt (self.move/setGeometry) khớp tuyệt đối với tọa độ vật lý.
 - Nhân vật đứng trên đáy màn hình (sàn / taskbar).
 - Mô phỏng trọng lực khi thả rơi tự do và dừng lại khi chạm sàn.
+- Giữ nguyên API công khai: việc quy đổi sang tọa độ cục bộ trong cửa sổ nhỏ hoàn toàn nằm ở tầng overlay/render.
 """
 
 from dataclasses import dataclass
@@ -13,12 +16,15 @@ from typing import Tuple, Callable, Optional
 
 @dataclass
 class PhysicsState:
-    """Trạng thái động lực học tức thời của nhân vật."""
-    x: float = 0.0              # Tọa độ tâm ngang của nhân vật (pixel màn hình)
-    y: float = 0.0              # Tọa độ chân/đáy của nhân vật (pixel màn hình)
-    vy: float = 0.0             # Vận tốc rơi theo trục dọc (pixel / giây)
-    width: float = 300.0        # Chiều rộng ước tính của nhân vật
-    height: float = 450.0       # Chiều cao ước tính của nhân vật
+    """
+    Trạng thái động lực học tức thời của nhân vật trên màn hình.
+    LƯU Ý DPI: Tất cả các giá trị tọa độ và kích thước đều là LOGICAL PIXELS.
+    """
+    x: float = 0.0              # Tọa độ tâm ngang của nhân vật trên màn hình (Logical Pixels)
+    y: float = 0.0              # Tọa độ chân/đáy của nhân vật trên màn hình (Logical Pixels)
+    vy: float = 0.0             # Vận tốc rơi theo trục dọc (Logical Pixels / giây)
+    width: float = 300.0        # Chiều rộng ước tính của nhân vật (Logical Pixels)
+    height: float = 450.0       # Chiều cao ước tính của nhân vật (Logical Pixels)
     is_dragged: bool = False    # Đang bị kéo bởi chuột
     is_falling: bool = False    # Đang rơi tự do do trọng lực
 
@@ -29,6 +35,8 @@ class PetPhysics:
     - Trọng lực rơi tự do.
     - Va chạm sàn đáy màn hình.
     - Kéo nhấc và thả rơi.
+    
+    Tất cả tọa độ màn hình ở đây là LOGICAL PIXELS (khớp với hệ tọa độ của Qt Widget trên Windows).
     """
 
     def __init__(self,
@@ -36,12 +44,13 @@ class PetPhysics:
                  screen_height: int = 1080,
                  gravity: float = 2400.0,
                  floor_margin: float = 10.0):
+        # Kích thước màn hình tính theo Logical Pixels
         self.screen_width: int = screen_width
         self.screen_height: int = screen_height
         self.gravity: float = gravity
         self.floor_margin: float = floor_margin
 
-        # Vị trí sàn (đáy màn hình trừ đi khoảng đệm)
+        # Vị trí sàn (đáy màn hình trừ đi khoảng đệm an toàn, Logical Pixels)
         self.floor_y: float = float(screen_height - floor_margin)
 
         # Trạng thái hiện tại: ban đầu đặt nhân vật ở góc phải đáy màn hình
@@ -49,7 +58,7 @@ class PetPhysics:
         initial_y = self.floor_y
         self.state = PhysicsState(x=initial_x, y=initial_y)
 
-        # Điểm lệch con trỏ khi bắt đầu kéo (để giữ nguyên vị trí bám tay)
+        # Điểm lệch con trỏ khi bắt đầu kéo (để giữ nguyên vị trí bám tay, Logical Pixels)
         self._drag_offset_x: float = 0.0
         self._drag_offset_y: float = 0.0
 
@@ -57,7 +66,9 @@ class PetPhysics:
         self.on_ground_hit: Optional[Callable[[], None]] = None
 
     def set_screen_bounds(self, width: int, height: int, floor_margin: Optional[float] = None) -> None:
-        """Cập nhật lại kích thước màn hình khi có sự thay đổi độ phân giải."""
+        """
+        Cập nhật lại kích thước giới hạn màn hình (Logical Pixels) khi có sự thay đổi độ phân giải.
+        """
         self.screen_width = width
         self.screen_height = height
         if floor_margin is not None:
@@ -70,30 +81,38 @@ class PetPhysics:
             self.state.vy = 0.0
 
     def update_dimensions(self, width: float, height: float) -> None:
-        """Cập nhật kích thước khung bao của nhân vật (đo đạc từ Live2D Bounding Box)."""
+        """
+        Cập nhật kích thước khung bao của nhân vật (Logical Pixels) từ Live2D Bounding Box.
+        """
         if width > 10.0 and height > 10.0:
             self.state.width = width
             self.state.height = height
 
     def start_drag(self, cursor_x: float, cursor_y: float) -> None:
-        """Bắt đầu nhấc nhân vật lên bằng chuột."""
+        """
+        Bắt đầu nhấc nhân vật lên bằng chuột.
+        cursor_x, cursor_y: Tọa độ con trỏ chuột trên toàn màn hình (Logical Pixels).
+        """
         self.state.is_dragged = True
         self.state.is_falling = False
         self.state.vy = 0.0
 
-        # Tính khoảng lệch giữa con trỏ chuột và tọa độ nhân vật
+        # Tính khoảng lệch giữa con trỏ chuột và tọa độ nhân vật (Logical Pixels)
         self._drag_offset_x = self.state.x - cursor_x
         self._drag_offset_y = self.state.y - cursor_y
 
     def drag_to(self, cursor_x: float, cursor_y: float) -> None:
-        """Di chuyển nhân vật theo con trỏ chuột khi đang giữ chuột."""
+        """
+        Di chuyển nhân vật theo con trỏ chuột khi đang giữ chuột.
+        cursor_x, cursor_y: Tọa độ con trỏ chuột trên toàn màn hình (Logical Pixels).
+        """
         if not self.state.is_dragged:
             return
 
         target_x = cursor_x + self._drag_offset_x
         target_y = cursor_y + self._drag_offset_y
 
-        # Giới hạn trong phạm vi màn hình
+        # Giới hạn trong phạm vi màn hình (Logical Pixels)
         half_w = self.state.width * 0.3
         self.state.x = max(half_w, min(self.screen_width - half_w, target_x))
         # Cho phép kéo lên cao, nhưng không kéo xuống sâu hơn sàn
@@ -121,7 +140,7 @@ class PetPhysics:
     def update(self, dt: float) -> None:
         """
         Cập nhật mô phỏng vật lý theo bước thời gian dt (giây):
-        - Áp dụng gia tốc trọng lực khi rơi.
+        - Áp dụng gia tốc trọng lực khi rơi (Logical Pixels / s^2).
         - Xử lý va chạm khi tiếp đất.
         """
         if self.state.is_dragged:
@@ -144,7 +163,7 @@ class PetPhysics:
 
     def get_screen_center_and_bottom(self) -> Tuple[float, float, float]:
         """
-        Trả về:
+        Trả về tọa độ trên toàn màn hình (Logical Pixels):
         - center_x: Tâm ngang của nhân vật.
         - center_y: Tâm dọc của nhân vật (xấp xỉ).
         - bottom_y: Chân của nhân vật (tiếp xúc mặt sàn).
