@@ -1,0 +1,13 @@
+{
+  "name": "Wanko",
+  "model3_path": "Wanko.model3.json",
+  "scale": 0.8,
+  "motion_map": {
+    "idle": "Idle",
+    "startled": "motions/shake_01.motion3.json",
+    "sleep": "motions/idle_03.motion3.json",
+    "dance": "motions/touch_01.motion3.json",
+    "dragged": "motions/touch_05.motion3.json"
+  },
+  "expression_map": {}
+}

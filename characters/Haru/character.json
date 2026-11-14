@@ -1,0 +1,17 @@
+{
+  "name": "Haru",
+  "model3_path": "Haru.model3.json",
+  "scale": 0.65,
+  "motion_map": {
+    "idle": "Idle",
+    "startled": "TapBody",
+    "sleep": "motions/haru_g_m16.motion3.json",
+    "dance": "motions/haru_g_m06.motion3.json",
+    "dragged": "motions/haru_g_m01.motion3.json"
+  },
+  "expression_map": {
+    "startled": "F03",
+    "sleep": "F05",
+    "smile": "F01"
+  }
+}

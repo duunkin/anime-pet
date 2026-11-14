@@ -84,7 +84,17 @@ import live2d
 # ==============================================================================
 # HẰNG SỐ CẤU HÌNH (CONFIGURATION CONSTANTS)
 # ==============================================================================
-MODEL_PATH: str = "characters/hiyori/hiyori.model3.json"
+# Quy ước tên nhân vật: Viết hoa chữ cái đầu (PascalCase).
+# Các nhân vật có sẵn trong thư mục characters/:
+#   - characters/Haru/Haru.model3.json
+#   - characters/Hiyori/Hiyori.model3.json
+#   - characters/Mao/Mao.model3.json
+#   - characters/Mark/Mark.model3.json
+#   - characters/Natori/Natori.model3.json
+#   - characters/Ren/Ren.model3.json
+#   - characters/Rice/Rice.model3.json
+#   - characters/Wanko/Wanko.model3.json
+MODEL_PATH: str = "../../characters/Hiyori/Hiyori.model3.json"
 
 TARGET_FPS: int = 60
 FRAME_INTERVAL_MS: int = int(1000 / TARGET_FPS)
@@ -174,17 +184,35 @@ def set_clickthrough(window_handle: int, clickthrough: bool) -> None:
 
 
 def resolve_model_path(path_str: str) -> str:
-    """Chuẩn hóa đường dẫn file model3.json."""
+    """
+    Chuẩn hóa và tìm kiếm file model .model3.json.
+    Quy ước tên nhân vật: Chữ cái đầu viết hoa (PascalCase), ví dụ:
+      characters/Hiyori/Hiyori.model3.json
+      characters/Mao/Mao.model3.json
+      characters/Haru/Haru.model3.json
+    Hỗ trợ linh hoạt khi chạy từ project root hoặc từ thư mục con (tests/spikes).
+    """
+    # 1. Thử đường dẫn trực tiếp
     abs_path = os.path.abspath(path_str)
     if os.path.exists(abs_path):
         return abs_path
 
-    directory = os.path.dirname(abs_path)
-    target_name = os.path.basename(abs_path).lower()
-    if os.path.isdir(directory):
-        for filename in os.listdir(directory):
-            if filename.lower() == target_name:
-                return os.path.join(directory, filename)
+    # 2. Thử tương đối so với thư mục file script hiện tại
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    cand_script = os.path.abspath(os.path.join(script_dir, path_str))
+    if os.path.exists(cand_script):
+        return cand_script
+
+    # 3. Tìm ngược lên cây thư mục để tìm thư mục 'characters'
+    current = script_dir
+    for _ in range(4):
+        candidate = os.path.abspath(os.path.join(current, path_str))
+        if os.path.exists(candidate):
+            return candidate
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
 
     return abs_path
 

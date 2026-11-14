@@ -85,8 +85,9 @@ import live2d
 # ==============================================================================
 # HẰNG SỐ CẤU HÌNH (CONFIGURATION CONSTANTS)
 # ==============================================================================
-# Đường dẫn tương đối hoặc tuyệt đối tới file .model3.json
-MODEL_PATH: str = "../../characters/Hiyori/Hiyori.model3.json"
+# Đường dẫn tới file .model3.json của nhân vật (Tên nhân vật viết hoa chữ cái đầu:
+# Haru, Hiyori, Mao, Mark, Natori, Ren, Rice, Wanko)
+MODEL_PATH: str = "characters/Hiyori/Hiyori.model3.json"
 
 # Tần số quét khung hình mục tiêu (~60 FPS tương đương ~16ms/frame)
 TARGET_FPS: int = 60
@@ -148,19 +149,33 @@ def apply_windows_transparency(window_handle: int) -> bool:
 def resolve_model_path(path_str: str) -> str:
     """
     Chuẩn hóa và tìm kiếm file model .model3.json.
-    Hỗ trợ cả trường hợp viết hoa/viết thường khác nhau trên các hệ điều hành.
+    Quy ước tên nhân vật: Chữ cái đầu viết hoa (PascalCase), ví dụ:
+      characters/Hiyori/Hiyori.model3.json
+      characters/Mao/Mao.model3.json
+      characters/Haru/Haru.model3.json
+    Hỗ trợ linh hoạt khi chạy từ project root hoặc từ thư mục con (tests/spikes).
     """
+    # 1. Thử đường dẫn trực tiếp
     abs_path = os.path.abspath(path_str)
     if os.path.exists(abs_path):
         return abs_path
 
-    # Thử tìm kiếm không phân biệt hoa thường trong cùng thư mục
-    directory = os.path.dirname(abs_path)
-    target_name = os.path.basename(abs_path).lower()
-    if os.path.isdir(directory):
-        for filename in os.listdir(directory):
-            if filename.lower() == target_name:
-                return os.path.join(directory, filename)
+    # 2. Thử tương đối so với thư mục file script hiện tại
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    cand_script = os.path.abspath(os.path.join(script_dir, path_str))
+    if os.path.exists(cand_script):
+        return cand_script
+
+    # 3. Tìm ngược lên cây thư mục để tìm thư mục 'characters'
+    current = script_dir
+    for _ in range(4):
+        candidate = os.path.abspath(os.path.join(current, path_str))
+        if os.path.exists(candidate):
+            return candidate
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
 
     return abs_path
 
