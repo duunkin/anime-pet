@@ -8,6 +8,8 @@ Sử dụng dataclass để đảm bảo tính tường minh, có type hinting v
 from dataclasses import dataclass
 import os
 
+LOOK_SPEED: float = 12.0
+
 
 @dataclass
 class AppSettings:
@@ -20,8 +22,12 @@ class AppSettings:
 
     # Tần số quét khung hình (FPS)
     target_fps: int = 60          # FPS khi hoạt động hoặc có tương tác
-    idle_fps: int = 15            # FPS thấp khi ở trạng thái nghỉ / ngủ lâu để tiết kiệm điện và CPU/GPU
-    fps_idle_timeout_sec: float = 6.0  # Thời gian không thao tác (giây) để hạ về FPS thấp
+    idle_fps: int = 30            # FPS thấp khi ở trạng thái nghỉ / ngủ lâu (mặc định 30)
+    fps_idle_timeout_sec: float = 20.0  # Thời gian không thao tác (giây) để hạ về FPS thấp (mặc định 20s)
+
+    # Hiệu năng & VSync
+    vsync: bool = True            # Bật / tắt VSync (SwapInterval = 1 nếu True, 0 nếu False)
+    debug_perf: bool = True       # Bật bộ đo hiệu năng paintGL mỗi giây
 
     # Cấu hình kích thước cửa sổ nhỏ (không phủ màn hình)
     # Cửa sổ chỉ vừa khít nhân vật + lề mỗi phía (mặc định 40px theo yêu cầu)
@@ -36,6 +42,8 @@ class AppSettings:
     # Tương tác mắt nhìn chuột
     eye_tracking_distance_px: float = 500.0  # Khoảng cách con trỏ (pixel) mà pet bắt đầu chú ý nhìn theo
     cursor_poll_interval_ms: int = 30       # Tần số kiểm tra vị trí con trỏ chuột (~33 Hz)
+    look_speed: float = LOOK_SPEED          # Tốc độ làm mượt nhìn theo chuột (độc lập FPS)
+    use_manual_look_params: bool = False    # Chỉ dùng SetParamById khi cờ này là True
 
     # Tỉ lệ hiển thị mặc định của model
     default_scale: float = 0.65

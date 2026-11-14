@@ -3,7 +3,7 @@ src/main.py
 -----------
 Điểm khởi chạy chính của ứng dụng Anime Desktop Pet:
 - Kích hoạt Per-Monitor DPI Awareness v2 trên Windows 10/11.
-- Cấu hình QSurfaceFormat hỗ trợ kênh alpha 8-bit cho cửa sổ trong suốt.
+- Cấu hình QSurfaceFormat hỗ trợ kênh alpha 8-bit và VSync cho cửa sổ trong suốt.
 - Khởi tạo Cubism SDK (live2d.init()).
 - Nạp nhân vật từ characters/<tên>/character.json.
 - Phối hợp các hệ thống: Physics, StateMachine, Live2DView và Overlay.
@@ -58,9 +58,9 @@ def enable_dpi_awareness() -> None:
         pass
 
 
-def configure_surface_format() -> None:
+def configure_surface_format(vsync: bool = True) -> None:
     """
-    Cấu hình QSurfaceFormat toàn cục với Alpha buffer 8-bit.
+    Cấu hình QSurfaceFormat toàn cục với Alpha buffer 8-bit và điều khiển VSync.
     BẮT BUỘC thiết lập trước khi tạo QApplication hoặc bất kỳ QOpenGLWidget nào
     để đảm bảo khả năng hiển thị nền trong suốt trên Windows DWM.
     """
@@ -69,7 +69,7 @@ def configure_surface_format() -> None:
     fmt.setDepthBufferSize(24)     # 24-bit Depth buffer
     fmt.setStencilBufferSize(8)   # 8-bit Stencil buffer cho mask clipping
     fmt.setSwapBehavior(QSurfaceFormat.SwapBehavior.DoubleBuffer)
-    fmt.setSwapInterval(1)        # Bật VSync chống xé hình
+    fmt.setSwapInterval(1 if vsync else 0)  # 1: Bật VSync, 0: Tắt VSync để thử nghiệm
     QSurfaceFormat.setDefaultFormat(fmt)
 
 
@@ -92,27 +92,28 @@ def main() -> None:
     print(" - Giữ chuột trái & kéo: Nhấc nhân vật lên; thả ra: rơi tự do")
     print(" - Click phải: Menu (Ngủ, Nhảy, Thoát)")
     print(" - Vùng trống (lề 40px): Click xuyên thấu xuống app bên dưới")
-    print(" - Phím tắt: [Ctrl+Q] hoặc [Esc] để thoát")
+    print(" - Phím tắt: [Ctrl+Q] hoặc [Esc] để thoát khi cửa sổ hoạt động")
     print("=================================================================")
 
-    # 2. Bật DPI Awareness v2
-    enable_dpi_awareness()
-
-    # 3. Cấu hình QSurfaceFormat trước QApplication
-    configure_surface_format()
-
-    # 4. Khởi tạo Qt Application
-    app = QApplication(sys.argv)
-
-    # 5. Khởi tạo thư viện Live2D Core
-    live2d.init()
-
-    # 6. Khởi tạo Cấu hình và Hồ sơ nhân vật
+    # 2. Khởi tạo cấu hình ứng dụng
     settings = AppSettings(
         character_name=args.character,
         auto_exit_seconds=args.auto_exit
     )
 
+    # 3. Bật DPI Awareness v2
+    enable_dpi_awareness()
+
+    # 4. Cấu hình QSurfaceFormat trước QApplication (đồng bộ VSync theo settings)
+    configure_surface_format(vsync=settings.vsync)
+
+    # 5. Khởi tạo Qt Application
+    app = QApplication(sys.argv)
+
+    # 6. Khởi tạo thư viện Live2D Core
+    live2d.init()
+
+    # 7. Khởi tạo Hồ sơ nhân vật
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     characters_dir = os.path.join(base_dir, settings.characters_dir)
     character_profile = CharacterProfile.load(characters_dir, settings.character_name)
@@ -121,7 +122,7 @@ def main() -> None:
     if character_profile.scale:
         settings.default_scale = character_profile.scale
 
-    # 7. Lấy kích thước màn hình chính (Logical Pixels)
+    # 8. Lấy kích thước màn hình chính (Logical Pixels)
     screen = app.primaryScreen()
     screen_geo = screen.geometry()
     screen_w = screen_geo.width()
@@ -129,7 +130,7 @@ def main() -> None:
     dpr = screen.devicePixelRatio()
     print(f"[Màn hình] Kích thước: {screen_w}x{screen_h} (Logical Pixels), DPI Scale: {dpr * 100:.0f}%")
 
-    # 8. Khởi tạo các module con (mỗi module một trách nhiệm)
+    # 9. Khởi tạo các module con (mỗi module một trách nhiệm)
     # PetPhysics hoàn toàn làm việc với hệ tọa độ màn hình (Logical Pixels)
     physics = PetPhysics(
         screen_width=screen_w,
@@ -144,7 +145,7 @@ def main() -> None:
 
     live2d_view = Live2DView(character=character_profile)
 
-    # 9. Tạo và khởi chạy cửa sổ Overlay nhỏ (không phủ màn hình)
+    # 10. Tạo và khởi chạy cửa sổ Overlay nhỏ (không phủ màn hình)
     overlay = Live2DPetOverlay(
         settings=settings,
         physics=physics,
@@ -165,10 +166,10 @@ def main() -> None:
     overlay.setGeometry(init_win_x, init_win_y, init_win_w, init_win_h)
     overlay.show()
 
-    # 10. Chạy vòng lặp sự kiện Qt
+    # 11. Chạy vòng lặp sự kiện Qt
     exit_code = app.exec()
 
-    # 11. Giải phóng tài nguyên Live2D Core trước khi thoát tiến trình
+    # 12. Giải phóng tài nguyên Live2D Core trước khi thoát tiến trình
     try:
         live2d.dispose()
         print("[Live2D] Đã giải phóng hoàn tất tài nguyên Live2D.")

@@ -4,7 +4,7 @@ src/behavior/state_machine.py
 Máy trạng thái hữu hạn (Finite State Machine) quản lý hành vi của Desktop Pet:
 - Các trạng thái: IDLE, DRAGGED, FALLING, STARTLED, SLEEPING, ACTION.
 - Hành vi IDLE xoay vòng ngẫu nhiên (chớp mắt, ngủ gật nhẹ, hành động ngẫu nhiên).
-- Quản lý FPS thích ứng: 60 FPS khi hoạt động, ~15 FPS khi nghỉ/ngủ lâu.
+- Quản lý FPS thích ứng: 60 FPS khi hoạt động, 30 FPS khi nghỉ/ngủ lâu.
 """
 
 from enum import Enum
@@ -27,14 +27,14 @@ class PetStateMachine:
     Quản lý luồng trạng thái, chu kỳ hành vi ngẫu nhiên và chính sách FPS thích ứng.
     """
 
-    def __init__(self, fps_idle_timeout_sec: float = 6.0):
+    def __init__(self, fps_idle_timeout_sec: float = 20.0):
         self.state: PetState = PetState.IDLE
         self.fps_idle_timeout: float = fps_idle_timeout_sec
 
         # Thời gian đếm
         self.state_time: float = 0.0        # Thời gian đã ở trạng thái hiện tại
         self.idle_time: float = 0.0         # Thời gian không có tương tác người dùng
-        self.is_high_fps: bool = True       # Cờ FPS cao (True = 60 FPS, False = 15 FPS)
+        self.is_high_fps: bool = True       # Cờ FPS cao (True = 60 FPS, False = 30 FPS)
 
         # Bộ đếm cho hành động ngẫu nhiên khi IDLE (8 đến 16 giây một lần)
         self._next_idle_action_interval: float = random.uniform(8.0, 16.0)
@@ -68,7 +68,7 @@ class PetStateMachine:
             self.on_state_changed(old_state, new_state)
 
     def notify_interaction(self) -> None:
-        """Được gọi khi người dùng có thao tác chuột (hover vào, click, kéo)."""
+        """Được gọi khi người dùng có thao tác chuột (hover vào, click, kéo, di chuyển gần mắt)."""
         self.idle_time = 0.0
         self.wake_up_fps()
 
@@ -81,10 +81,10 @@ class PetStateMachine:
                 self.on_fps_mode_changed(True)
 
     def _enter_low_fps(self) -> None:
-        """Hạ xuống chế độ 15 FPS khi nhàn rỗi lâu để tiết kiệm tài nguyên."""
+        """Hạ xuống chế độ 30 FPS khi nhàn rỗi lâu để tiết kiệm tài nguyên."""
         if self.is_high_fps:
             self.is_high_fps = False
-            print("[FPS] Không có thao tác sau thời gian chờ -> Hạ xuống 15 FPS tiết kiệm pin/GPU.")
+            print("[FPS] Không có thao tác sau thời gian chờ -> Hạ xuống 30 FPS tiết kiệm pin/GPU.")
             if self.on_fps_mode_changed is not None:
                 self.on_fps_mode_changed(False)
 

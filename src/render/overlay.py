@@ -8,7 +8,7 @@ Cửa sổ hiển thị Live2D Pet Overlay kích thước nhỏ gọn (QOpenGLWi
 - PetPhysics hoàn toàn làm việc với hệ tọa độ màn hình (Logical Pixels); việc quy đổi sang
   tọa độ cục bộ chỉ nằm trong lớp overlay/render này.
 - Giữ nguyên toàn bộ tương tác:
-  + Mắt nhìn theo con trỏ chuột (dùng GetCursorPos, mắt vẫn nhìn theo kể cả khi chuột ở xa ngoài cửa sổ).
+  + Mắt nhìn theo con trỏ chuột (làm mượt độc lập FPS theo dt trong paintGL, cập nhật mục tiêu trong poll_cursor).
   + Click chuột trái = giật mình (STARTLED).
   + Giữ chuột trái & kéo = nhấc nhân vật lên; thả ra = rơi tự do xuống sàn.
   + Click phải = QMenu (Ngủ, Nhảy, Thoát).
@@ -52,10 +52,6 @@ SWP_NOMOVE: int = 0x0002
 SWP_NOZORDER: int = 0x0004
 SWP_FRAMECHANGED: int = 0x0020
 SWP_FLAGS: int = SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED
-
-VK_ESCAPE: int = 0x1B
-VK_CONTROL: int = 0x11
-VK_Q: int = ord('Q')
 
 
 class POINT(ctypes.Structure):
@@ -138,20 +134,29 @@ class Live2DPetOverlay(QOpenGLWidget):
         # Quản lý thời gian tính toán vật lý
         self._last_frame_time: float = time.perf_counter()
 
-        # Lưu cache bounding box vật lý của nhân vật (trong không gian Local Physical Pixels của cửa sổ)
+        # Cache bounding box vật lý của nhân vật (trong không gian Local Physical Pixels của cửa sổ)
         self._current_phys_box: Optional[Tuple[float, float, float, float]] = None
+
+        # Lưu vị trí chuột lần poll trước để kiểm tra dịch chuyển > 3px (Physical Pixels)
+        self._last_cursor_pos: Optional[Tuple[int, int]] = None
+
+        # Bộ đo hiệu năng (Performance measurement)
+        self._perf_frame_count: int = 0
+        self._perf_total_paint_time: float = 0.0
+        self._perf_last_report_time: float = time.perf_counter()
 
         # 1. Cấu hình cờ cửa sổ (Frameless, Always On Top, Translucent)
         self._setup_window_flags()
 
-        # 2. Cấu hình phím tắt (Esc, Ctrl+Q)
+        # 2. Cấu hình phím tắt (Esc, Ctrl+Q) trong Qt
         self._setup_shortcuts()
 
         # 3. Kết nối callbacks của State Machine và Physics
         self._setup_behavior_bindings()
 
-        # 4. Timer vẽ khung hình (FPS thích ứng: 60 FPS khi hoạt động, 15 FPS khi nhàn rỗi)
+        # 4. Timer vẽ khung hình (sử dụng PreciseTimer, 60 FPS hoạt động / 30 FPS nhàn rỗi)
         self.render_timer = QTimer(self)
+        self.render_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.render_timer.setInterval(int(1000 / self.settings.target_fps))
         self.render_timer.timeout.connect(self.on_render_tick)
 
@@ -174,7 +179,7 @@ class Live2DPetOverlay(QOpenGLWidget):
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.WindowStaysOnTopHint |
-            Qt.WindowType.SubWindow  # Giúp không tạo taskbar icon riêng nếu muốn
+            Qt.WindowType.SubWindow
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
@@ -182,7 +187,7 @@ class Live2DPetOverlay(QOpenGLWidget):
         self.setMouseTracking(True)
 
     def _setup_shortcuts(self) -> None:
-        """Đăng ký phím tắt Ctrl+Q và Esc trong Qt."""
+        """Đăng ký phím tắt Ctrl+Q và Esc an toàn trong Qt (không can thiệp toàn cục)."""
         self.shortcut_esc = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
         self.shortcut_esc.setContext(Qt.ShortcutContext.ApplicationShortcut)
         self.shortcut_esc.activated.connect(lambda: self.exit_application("Phím Esc (Qt Shortcut)"))
@@ -203,7 +208,7 @@ class Live2DPetOverlay(QOpenGLWidget):
         self.physics.on_ground_hit = self.state_machine.trigger_land
 
     def _apply_fps_mode(self, is_high: bool) -> None:
-        """Điều chỉnh tần số quét của render timer giữa 60 FPS và 15 FPS."""
+        """Điều chỉnh tần số quét của render timer giữa target_fps (60) và idle_fps (30)."""
         fps = self.settings.target_fps if is_high else self.settings.idle_fps
         interval_ms = max(10, int(1000 / fps))
         self.render_timer.setInterval(interval_ms)
@@ -274,30 +279,53 @@ class Live2DPetOverlay(QOpenGLWidget):
         win_w = int(round(char_w + 2.0 * self.margin_px))
         win_h = int(round(char_h + 2.0 * self.margin_px))
 
-        # 3. Cập nhật kích thước nhân vật vào PetPhysics (Logical Pixels)
+        # 3. Cập nhật kích thước ban đầu vào PetPhysics (Logical Pixels)
         self.physics.update_dimensions(char_w, char_h)
 
         # 4. Thiết lập kích thước cửa sổ Qt
         print(f"[Overlay] Thiết lập cửa sổ nhỏ: {win_w}x{win_h} (Logical px, gồm lề {self.margin_px:.0f}px mỗi phía)")
         self.resize(win_w, win_h)
 
+        # Cấu hình bố cục và cache Bounding Box (Local Physical Pixels)
+        dpr = self.devicePixelRatio()
+        self.live2d_view.setup_layout(win_w, win_h, dpr, self.margin_px)
+        self._current_phys_box = self.live2d_view.get_screen_bounds_physical(win_w * dpr, win_h * dpr)
+        if self._current_phys_box is not None:
+            bx1, by1, bx2, by2 = self._current_phys_box
+            self.physics.update_dimensions((bx2 - bx1) / dpr, (by2 - by1) / dpr)
+
         # 5. Đồng bộ vị trí ban đầu của cửa sổ trên màn hình desktop
         self._sync_window_position()
 
     def resizeGL(self, width: int, height: int) -> None:
         """
-        Cập nhật bố cục viewport và model Live2D bên trong cửa sổ nhỏ.
+        Cập nhật bố cục viewport và model Live2D bên trong cửa sổ nhỏ khi kích thước thay đổi.
         LƯU Ý DPI:
         - width, height: Kích thước cửa sổ Qt (Logical Pixels).
         - dpr = devicePixelRatio(): Tỉ lệ phóng to DPI.
-        - setup_layout sẽ ánh xạ sang kích thước viewport vật lý (Physical Pixels)
-          và căn lề 40px * dpr chuẩn xác.
+        - setup_layout ánh xạ sang Physical Pixels và căn lề 40px * dpr chuẩn xác.
+        - Tính toán và cache lại self._current_phys_box (không tính mỗi frame trong paintGL).
+        - Cập nhật lại kích thước nhân vật cho PetPhysics (Logical Pixels).
         """
         dpr = self.devicePixelRatio()
         self.live2d_view.setup_layout(width, height, dpr, self.margin_px)
 
+        phys_w = width * dpr
+        phys_h = height * dpr
+        self._current_phys_box = self.live2d_view.get_screen_bounds_physical(phys_w, phys_h)
+
+        if self._current_phys_box is not None:
+            bx1, by1, bx2, by2 = self._current_phys_box
+            char_logical_w = (bx2 - bx1) / dpr
+            char_logical_h = (by2 - by1) / dpr
+            self.physics.update_dimensions(char_logical_w, char_logical_h)
+
     def paintGL(self) -> None:
         """Vẽ khung hình hiện tại."""
+        t_start: float = 0.0
+        if self.settings.debug_perf:
+            t_start = time.perf_counter()
+
         now = time.perf_counter()
         dt = max(0.001, min(0.1, now - self._last_frame_time))
         self._last_frame_time = now
@@ -311,14 +339,31 @@ class Live2DPetOverlay(QOpenGLWidget):
         # 3. Cập nhật state machine
         self.state_machine.update(dt, self.live2d_view.is_motion_finished())
 
-        # 4. Vẽ model vào framebuffer nhỏ
+        # 4. Cập nhật cử động mắt nhìn theo chuột (làm mượt độc lập FPS theo dt)
+        self.live2d_view.update_look(
+            dt,
+            look_speed=self.settings.look_speed,
+            use_manual_params=self.settings.use_manual_look_params
+        )
+
+        # 5. Vẽ model vào framebuffer nhỏ
         self.live2d_view.render_frame()
 
-        # 5. Cập nhật Bounding Box cục bộ trong cửa sổ (Local Physical Pixels)
-        dpr = self.devicePixelRatio()
-        phys_w = self.width() * dpr
-        phys_h = self.height() * dpr
-        self._current_phys_box = self.live2d_view.get_screen_bounds_physical(phys_w, phys_h)
+        # 6. Đo hiệu năng và in mỗi 1 giây (nếu bật debug_perf)
+        if self.settings.debug_perf:
+            paint_duration = time.perf_counter() - t_start
+            self._perf_frame_count += 1
+            self._perf_total_paint_time += paint_duration
+
+            elapsed = time.perf_counter() - self._perf_last_report_time
+            if elapsed >= 1.0:
+                fps_measured = self._perf_frame_count / elapsed
+                avg_paint_ms = (self._perf_total_paint_time / max(1, self._perf_frame_count)) * 1000.0
+                fps_mode = "cao" if self.state_machine.is_high_fps else "thấp"
+                print(f"[Perf] {round(fps_measured)} FPS, paintGL TB {avg_paint_ms:.1f} ms, mức FPS hiện tại: {fps_mode}")
+                self._perf_frame_count = 0
+                self._perf_total_paint_time = 0.0
+                self._perf_last_report_time = time.perf_counter()
 
     @Slot()
     def on_render_tick(self) -> None:
@@ -366,10 +411,10 @@ class Live2DPetOverlay(QOpenGLWidget):
     def poll_cursor(self) -> None:
         """
         Vòng lặp ~30ms kiểm tra chuột:
-        1. Kiểm tra phím thoát toàn cục (GetAsyncKeyState) đề phòng overlay mất focus bàn phím.
-        2. Lấy tọa độ chuột toàn màn hình qua GetCursorPos (Physical Pixels).
-        3. Quy đổi sang tọa độ cục bộ của cửa sổ (Local Physical Pixels).
-        4. Điều khiển mắt nhìn theo chuột (kể cả khi con trỏ ở xa ngoài cửa sổ).
+        1. Lấy tọa độ chuột toàn màn hình qua GetCursorPos (Physical Pixels).
+        2. Quy đổi sang tọa độ cục bộ của cửa sổ (Local Physical Pixels).
+        3. Cập nhật mục tiêu nhìn của mắt (set_look_target).
+        4. Kiểm tra cử động chuột gần nhân vật (>3px trong eye_tracking_distance) -> notify_interaction().
         5. Hit-testing với thân nhân vật và bật/tắt WS_EX_TRANSPARENT:
            - Trúng nhân vật -> Tắt WS_EX_TRANSPARENT (bắt sự kiện click/kéo).
            - Vùng trống (lề 40px hoặc ngoài nhân vật) -> Bật WS_EX_TRANSPARENT (click xuyên thấu).
@@ -379,25 +424,11 @@ class Live2DPetOverlay(QOpenGLWidget):
 
         user32 = ctypes.windll.user32
 
-        # --- A. PHÍM THOÁT TOÀN CỤC ---
-        esc_down = bool(user32.GetAsyncKeyState(VK_ESCAPE) & 0x8000)
-        ctrl_down = bool(user32.GetAsyncKeyState(VK_CONTROL) & 0x8000)
-        q_down = bool(user32.GetAsyncKeyState(VK_Q) & 0x8000)
-
-        if esc_down:
-            self.exit_application("Phím Esc (GetAsyncKeyState)")
-            return
-        if ctrl_down and q_down:
-            self.exit_application("Phím Ctrl+Q (GetAsyncKeyState)")
-            return
-
-        # --- B. LẤY TỌA ĐỘ CON TRỎ CHUỘT TOÀN MÀN HÌNH (PHYSICAL PIXELS) ---
+        # 1. LẤY TỌA ĐỘ CON TRỎ CHUỘT TOÀN MÀN HÌNH (PHYSICAL PIXELS)
         pt = POINT()
         user32.GetCursorPos(ctypes.byref(pt))
 
-        # --- C. QUY ĐỔI SANG TỌA ĐỘ VẬT LÝ CỤC BỘ TRONG CỬA SỔ ---
-        # self.x(), self.y() là Logical Pixels của cửa sổ trên màn hình.
-        # Nhân với dpr để quy đổi sang Physical Pixels trên màn hình.
+        # 2. QUY ĐỔI SANG TỌA ĐỘ VẬT LÝ CỤC BỘ TRONG CỬA SỔ (LOCAL PHYSICAL PIXELS)
         dpr = self.devicePixelRatio()
         win_phys_x = round(self.x() * dpr)
         win_phys_y = round(self.y() * dpr)
@@ -405,14 +436,29 @@ class Live2DPetOverlay(QOpenGLWidget):
         local_cursor_phys_x = pt.x - win_phys_x
         local_cursor_phys_y = pt.y - win_phys_y
 
-        # --- D. ĐIỀU KHIỂN MẮT NHÌN THEO CHUỘT ---
-        # Chú ý: local_cursor_phys_x/y phản ánh chính xác vector hướng và khoảng cách từ mắt
-        # tới con trỏ chuột trên toàn màn hình, nên mắt vẫn nhìn theo kể cả khi chuột ở xa ngoài cửa sổ!
+        # 3. THIẾT LẬP MỤC TIÊU NHÌN THEO CHUỘT
         tracking_dist_phys = self.settings.eye_tracking_distance_px * dpr
-        self.live2d_view.update_look_at(local_cursor_phys_x, local_cursor_phys_y,
-                                        self._current_phys_box, tracking_dist_phys)
+        self.live2d_view.set_look_target(local_cursor_phys_x, local_cursor_phys_y,
+                                         self._current_phys_box, tracking_dist_phys)
 
-        # --- E. HIT-TESTING VỚI THÂN NHÂN VẬT ---
+        # 4. DUY TRÌ FPS CAO KHI CHUỘT DI CHUYỂN GẦN NHÂN VẬT (>3px so với lần poll trước)
+        cursor_moved = False
+        if self._last_cursor_pos is not None:
+            dx_cur = pt.x - self._last_cursor_pos[0]
+            dy_cur = pt.y - self._last_cursor_pos[1]
+            if (dx_cur * dx_cur + dy_cur * dy_cur) > 9.0:  # > 3px (3^2 = 9)
+                cursor_moved = True
+        self._last_cursor_pos = (pt.x, pt.y)
+
+        if self._current_phys_box is not None:
+            bx1, by1, bx2, by2 = self._current_phys_box
+            eye_x = (bx1 + bx2) * 0.5
+            eye_y = by1 + (by2 - by1) * 0.3
+            dist_to_pet = ((local_cursor_phys_x - eye_x) ** 2 + (local_cursor_phys_y - eye_y) ** 2) ** 0.5
+            if dist_to_pet <= tracking_dist_phys and cursor_moved:
+                self.state_machine.notify_interaction()
+
+        # 5. HIT-TESTING VỚI THÂN NHÂN VẬT VÀ ĐIỀU KHIỂN CLICK-THROUGH
         now_hovered = self.is_cursor_over_character(local_cursor_phys_x, local_cursor_phys_y)
 
         # Khi đang trong quá trình kéo chuột hoặc giữ chuột, luôn giữ không cho click-through

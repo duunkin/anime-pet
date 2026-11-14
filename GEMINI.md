@@ -87,6 +87,13 @@ App Python hiển thị một hoặc nhiều nhân vật anime (Live2D) đi lạ
 - Vòng lặp chính phải nhẹ: tránh tạo đối tượng mới mỗi frame, tránh gọi API hệ thống nặng mỗi frame (cache, giảm tần suất).
 - Bắt lỗi ở biên (tải model, đọc config) và log rõ ràng, không để app crash im lặng.
 
+### Quy ước hiệu năng
+- Không tính toán nặng mỗi frame trong paintGL; cái gì không đổi thì tính một lần và cache (ví dụ bounding box, kích thước).
+- Làm mượt chuyển động phải theo dt (exponential smoothing / lerp theo thời gian), không theo số lần gọi hàm.
+- Timer vẽ dùng `PreciseTimer`; mức FPS thấp khi nhàn rỗi không được dưới 30 FPS.
+- Không dùng phím tắt toàn cục (`GetAsyncKeyState`) cho chức năng thoát (tránh chặn phím của OS/app khác).
+- Mọi quy đổi logic/physical phải đi qua `devicePixelRatio`, ghi chú rõ bằng comment.
+
 ## 5. Lộ trình (phase)
 
 - **Phase 0**: spike kỹ thuật (overlay + Live2D, click-through, vị trí cửa sổ). **Xong**, chạy không lỗi.
@@ -95,9 +102,8 @@ App Python hiển thị một hoặc nhiều nhân vật anime (Live2D) đi lạ
 
 ## 6. Trạng thái hiện tại (agent cập nhật mục này sau mỗi task)
 
-- Phase 1 chạy được. Vấn đề đã biết: **nhân vật hơi lag**.
-- Gợi ý hướng kiểm tra lag (chưa xác nhận nguyên nhân): tần suất timer/vòng lặp cập nhật, chi phí render Live2D mỗi frame, việc repaint toàn màn hình của overlay thay vì vùng nhỏ quanh nhân vật.
-- Việc tiếp theo: giảm lag Phase 1 rồi sang Phase 2.
+- Phase 1 đã tối ưu hóa hiệu năng & giảm lag: mắt nhìn theo chuột độc lập FPS (Drag + dt smoothing), cache bounding box vật lý sau setup_layout, PreciseTimer với idle FPS 30 / active FPS 60, hỗ trợ bật/tắt VSync, bộ đo hiệu năng paintGL, gỡ phím thoát toàn cục.
+- Việc tiếp theo: Chuyển sang Phase 2 (tương tác chuột đầy đủ, nhận biết cửa sổ, idle/mood/affection).
 
 ## 7. Cách báo lỗi / chạy thử
 

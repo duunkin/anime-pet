@@ -11,6 +11,7 @@ Quản lý tầng vẽ và tương tác trực tiếp với Live2D Cubism SDK (l
 
 from typing import Optional, Tuple
 import os
+import math
 import live2d
 from OpenGL import GL
 
@@ -29,7 +30,9 @@ class Live2DView:
         # Khung bao giới hạn trong không gian model space (min_x, min_y, max_x, max_y)
         self.model_bounds: Optional[Tuple[float, float, float, float]] = None
 
-        # Tọa độ nhìn hiện tại của mắt/mặt
+        # Hướng nhìn mục tiêu và hướng nhìn hiện tại của mắt/mặt
+        self._target_look_x: float = 0.0
+        self._target_look_y: float = 0.0
         self._current_look_x: float = 0.0
         self._current_look_y: float = 0.0
 
@@ -177,22 +180,6 @@ class Live2DView:
         self.model.SetOffset(off_x, off_y)
         self.model.Update()
 
-    def resize(self, width: int, height: int) -> None:
-        """
-        Đồng bộ viewport khi cửa sổ thay đổi kích thước (Fallback tương thích).
-        """
-        GL.glViewport(0, 0, width, height)
-        if self.model is not None:
-            self.model.Resize(width, height)
-            self.model.SetScale(self.character.scale)
-
-    def set_screen_position(self, center_x: float, bottom_y: float, screen_w: int, screen_h: int) -> None:
-        """
-        Hàm tương thích cũ: Khi cửa sổ overlay đã tự di chuyển theo tọa độ màn hình
-        (self.move()), vị trí nhân vật bên trong cửa sổ là cố định theo setup_layout.
-        """
-        pass
-
     def get_screen_bounds_physical(self, phys_w: float, phys_h: float) -> Optional[Tuple[float, float, float, float]]:
         """
         Tính toán tọa độ khung bao nhân vật trong KHÔNG GIAN CỤC BỘ CỦA CỬA SỔ (Local Physical Pixels).
@@ -220,61 +207,70 @@ class Live2DView:
         except Exception:
             return None
 
-    def update_look_at(self, cursor_local_phys_x: float, cursor_local_phys_y: float,
-                       box: Optional[Tuple[float, float, float, float]],
-                       max_distance_px: float) -> None:
+    def set_look_target(self, cursor_local_phys_x: float, cursor_local_phys_y: float,
+                        box: Optional[Tuple[float, float, float, float]],
+                        max_distance_px: float) -> None:
         """
-        Điều khiển hướng nhìn của mắt và quay đầu theo con trỏ chuột:
-        - cursor_local_phys_x, cursor_local_phys_y: Tọa độ con trỏ chuột trong không gian
-          cục bộ của cửa sổ (Local Physical Pixels). Khi con trỏ ở ngoài cửa sổ, tọa độ này
-          vẫn phản ánh chính xác vị trí tương đối (có thể âm hoặc lớn hơn kích thước cửa sổ).
+        Xác định hướng nhìn mục tiêu từ vị trí chuột trong Local Physical Pixels:
+        - cursor_local_phys_x, cursor_local_phys_y: Tọa độ cục bộ của cửa sổ (Physical Pixels).
         - box: Bounding box nhân vật trong cửa sổ (Local Physical Pixels).
         - max_distance_px: Khoảng cách tối đa để pet chú ý nhìn theo (Physical Pixels).
+        Chỉ lưu vào self._target_look_x / self._target_look_y, không làm mượt hay gọi Drag tại đây.
+        """
+        if box is None:
+            self._target_look_x, self._target_look_y = 0.0, 0.0
+            return
+
+        x1, y1, x2, y2 = box
+        # Ước lượng vị trí mắt/đầu nhân vật (~30% từ đỉnh đầu xuống)
+        eye_x = (x1 + x2) * 0.5
+        eye_y = y1 + (y2 - y1) * 0.3
+
+        # Khoảng cách vector từ mắt tới chuột trên màn hình
+        dx = cursor_local_phys_x - eye_x
+        dy = cursor_local_phys_y - eye_y
+        dist = (dx * dx + dy * dy) ** 0.5
+
+        if dist <= max_distance_px and max_distance_px > 0:
+            # Chuẩn hóa về đoạn [-1.0, 1.0]
+            self._target_look_x = max(-1.0, min(1.0, dx / (max_distance_px * 0.5)))
+            # Con trỏ ở dưới -> mắt nhìn xuống (Y âm trong Cubism Drag)
+            self._target_look_y = max(-1.0, min(1.0, -dy / (max_distance_px * 0.5)))
+        else:
+            # Con trỏ ở xa -> nhìn chính diện
+            self._target_look_x, self._target_look_y = 0.0, 0.0
+
+    def update_look(self, dt: float, look_speed: float = 12.0, use_manual_params: bool = False) -> None:
+        """
+        Làm mượt hướng nhìn theo thời gian (độc lập FPS) và cập nhật vào model Live2D:
+        - k = 1.0 - exp(-dt * look_speed)
+        - model.Drag(current_x, current_y)
+        - Chỉ gán SetParamById khi use_manual_params = True.
+        Được gọi MỖI FRAME trong paintGL.
         """
         if self.model is None:
             return
 
-        if box is None:
-            target_x, target_y = 0.0, 0.0
-        else:
-            x1, y1, x2, y2 = box
-            # Ước lượng vị trí mắt/đầu nhân vật (~30% từ đỉnh đầu xuống)
-            eye_x = (x1 + x2) * 0.5
-            eye_y = y1 + (y2 - y1) * 0.3
+        # Làm mượt độc lập FPS
+        k = 1.0 - math.exp(-dt * look_speed)
+        self._current_look_x += (self._target_look_x - self._current_look_x) * k
+        self._current_look_y += (self._target_look_y - self._current_look_y) * k
 
-            # Khoảng cách vector từ mắt tới chuột trên màn hình
-            dx = cursor_local_phys_x - eye_x
-            dy = cursor_local_phys_y - eye_y
-            dist = (dx * dx + dy * dy) ** 0.5
-
-            if dist <= max_distance_px and max_distance_px > 0:
-                # Chuẩn hóa về đoạn [-1.0, 1.0]
-                target_x = max(-1.0, min(1.0, dx / (max_distance_px * 0.5)))
-                # Con trỏ ở dưới -> mắt nhìn xuống (Y âm trong Cubism Drag)
-                target_y = max(-1.0, min(1.0, -dy / (max_distance_px * 0.5)))
-            else:
-                # Con trỏ ở xa -> nhìn chính diện
-                target_x, target_y = 0.0, 0.0
-
-        # Làm mượt chuyển động nhìn (lerp)
-        smoothing = 0.25
-        self._current_look_x += (target_x - self._current_look_x) * smoothing
-        self._current_look_y += (target_y - self._current_look_y) * smoothing
-
-        # 1. Thử gọi Drag của Cubism SDK
+        # 1. Điều khiển hướng nhìn bằng Drag của Cubism SDK
         try:
             self.model.Drag(self._current_look_x, self._current_look_y)
         except Exception:
             pass
 
-        # 2. Gán trực tiếp các tham số góc quay đầu và nhãn cầu mắt
-        try:
-            self.model.SetParamById("ParamAngleX", self._current_look_x * 20.0)
-            self.model.SetParamById("ParamAngleY", self._current_look_y * 20.0)
-            self.model.SetParamById("ParamEyeBallX", self._current_look_x * 0.8)
-            self.model.SetParamById("ParamEyeBallY", self._current_look_y * 0.8)
-        except Exception:
-            pass
+        # 2. Gán trực tiếp các tham số nếu cờ use_manual_params được kích hoạt
+        if use_manual_params:
+            try:
+                self.model.SetParamById("ParamAngleX", self._current_look_x * 20.0)
+                self.model.SetParamById("ParamAngleY", self._current_look_y * 20.0)
+                self.model.SetParamById("ParamEyeBallX", self._current_look_x * 0.8)
+                self.model.SetParamById("ParamEyeBallY", self._current_look_y * 0.8)
+            except Exception:
+                pass
 
     def play_behavior(self, behavior: str, priority: int = 3) -> bool:
         """Kích hoạt hành vi cử động / biểu cảm theo bảng ánh xạ character."""
